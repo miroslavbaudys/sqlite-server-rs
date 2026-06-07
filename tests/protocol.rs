@@ -248,3 +248,72 @@ fn case_insensitive_and_key_repair() {
     let resp = call_raw(&mut conn, r#"{cmd:"LIST"}"#);
     assert!(resp.get("list").is_some());
 }
+
+#[test]
+fn oversized_packet_closes_connection() {
+    let server = TestServer::start();
+    let mut conn = server.connect();
+
+    // Claim a length larger than the default 16 MiB max; the server must close without
+    // reading a body or sending a response.
+    let oversized: u32 = 20 * 1024 * 1024;
+    conn.write_all(&oversized.to_le_bytes()).unwrap();
+
+    // Reading a response header should now fail (connection closed).
+    let mut header = [0u8; 4];
+    assert!(conn.read_exact(&mut header).is_err());
+}
+
+#[test]
+fn transaction_rollback_on_one_connection() {
+    let server = TestServer::start();
+    let mut conn = server.connect();
+
+    call(
+        &mut conn,
+        &json!({"cmd":"QUERY","db":"tx.db","query":"CREATE TABLE t(id INTEGER)"}),
+    );
+    // Issued as separate requests on the same persistent connection.
+    call(
+        &mut conn,
+        &json!({"cmd":"QUERY","db":"tx.db","query":"BEGIN"}),
+    );
+    call(
+        &mut conn,
+        &json!({"cmd":"QUERY","db":"tx.db","query":"INSERT INTO t VALUES (1), (2)"}),
+    );
+    call(
+        &mut conn,
+        &json!({"cmd":"QUERY","db":"tx.db","query":"ROLLBACK"}),
+    );
+
+    let resp = call(
+        &mut conn,
+        &json!({"cmd":"QUERY","db":"tx.db","query":"SELECT COUNT(*) AS n FROM t"}),
+    );
+    assert_eq!(resp["data"][0]["n"], json!(0));
+}
+
+#[test]
+fn two_connections_share_a_database_file() {
+    let server = TestServer::start();
+    let mut writer = server.connect();
+    let mut reader = server.connect();
+
+    call(
+        &mut writer,
+        &json!({"cmd":"QUERY","db":"shared.db","query":"CREATE TABLE s(v TEXT)"}),
+    );
+    // Autocommitted by the writer connection.
+    call(
+        &mut writer,
+        &json!({"cmd":"QUERY","db":"shared.db","query":"INSERT INTO s VALUES ('hello')"}),
+    );
+
+    // A separate connection (separate SQLite handle to the same file) sees it.
+    let resp = call(
+        &mut reader,
+        &json!({"cmd":"QUERY","db":"shared.db","query":"SELECT v FROM s"}),
+    );
+    assert_eq!(resp["data"][0]["v"], json!("hello"));
+}

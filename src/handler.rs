@@ -270,3 +270,258 @@ fn key_repair_regex() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| Regex::new(r#"(['"])?([a-zA-Z0-9]+)(['"])?:"#).unwrap())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::net::SocketAddr;
+    use std::path::{Path, PathBuf};
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    fn temp_dir() -> PathBuf {
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let id = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!("ssrs-unit-{nanos}-{id}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn handler_in(dir: &Path) -> RequestHandler {
+        let config = Config {
+            listen_addr: "127.0.0.1:0".parse::<SocketAddr>().unwrap(),
+            workers: 1,
+            databases_folder: dir.to_path_buf(),
+            client_max_packet_size: 16 * 1024 * 1024,
+        };
+        RequestHandler::new(Arc::new(config))
+    }
+
+    #[test]
+    fn hex_encoding_is_lowercase() {
+        assert_eq!(to_hex(&[0x00, 0xff, 0x10, 0xab]), "00ff10ab");
+        assert_eq!(to_hex(&[]), "");
+    }
+
+    #[test]
+    fn sidecar_files_are_detected() {
+        assert!(is_sqlite_sidecar_file("mydb-wal"));
+        assert!(is_sqlite_sidecar_file("mydb-shm"));
+        assert!(is_sqlite_sidecar_file("mydb-journal"));
+        assert!(!is_sqlite_sidecar_file("mydb"));
+        assert!(!is_sqlite_sidecar_file("mydb.db"));
+    }
+
+    #[test]
+    fn parse_request_handles_valid_repair_and_invalid() {
+        // Valid JSON.
+        let v = parse_request(r#"{"cmd":"LIST"}"#).unwrap();
+        assert_eq!(v["cmd"], json!("LIST"));
+
+        // Unquoted keys are repaired (SQLiteStudio style).
+        let v = parse_request(r#"{cmd:"LIST"}"#).unwrap();
+        assert_eq!(v["cmd"], json!("LIST"));
+
+        // Unrepairable garbage.
+        assert!(parse_request("not json at all {{{").is_err());
+    }
+
+    #[test]
+    fn blob_pointer_value_mapping() {
+        // ValueRef -> JSON mapping for each SQLite type.
+        assert_eq!(value_ref_to_json(ValueRef::Null), Value::Null);
+        assert_eq!(value_ref_to_json(ValueRef::Integer(42)), json!(42));
+        assert_eq!(value_ref_to_json(ValueRef::Real(2.5)), json!(2.5));
+        assert_eq!(value_ref_to_json(ValueRef::Text(b"hi")), json!("hi"));
+        assert_eq!(
+            value_ref_to_json(ValueRef::Blob(&[0x00, 0xff])),
+            json!("X'00ff'")
+        );
+        // Non-finite reals have no JSON representation -> null.
+        assert_eq!(
+            value_ref_to_json(ValueRef::Real(f64::INFINITY)),
+            Value::Null
+        );
+    }
+
+    #[test]
+    fn database_name_safety() {
+        let dir = temp_dir();
+        let handler = handler_in(&dir);
+
+        assert!(handler.is_safe_database_name("mydb.db"));
+        assert!(handler.is_safe_database_name("sales"));
+
+        assert!(!handler.is_safe_database_name(""));
+        assert!(!handler.is_safe_database_name("."));
+        assert!(!handler.is_safe_database_name(".."));
+        assert!(!handler.is_safe_database_name("../escape"));
+        assert!(!handler.is_safe_database_name("sub/dir"));
+        assert!(!handler.is_safe_database_name("/etc/passwd"));
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn query_value_encoding_and_column_order() {
+        let dir = temp_dir();
+        let mut handler = handler_in(&dir);
+
+        let created = handler.handle_request(
+            r#"{"cmd":"QUERY","db":"t.db","query":"CREATE TABLE x(a INTEGER, b TEXT, c REAL, d BLOB)"}"#,
+        );
+        assert_eq!(created, json!({"columns": [], "data": []}));
+
+        handler.handle_request(
+            r#"{"cmd":"QUERY","db":"t.db","query":"INSERT INTO x VALUES (1, 'hi', 2.5, X'00ff')"}"#,
+        );
+        handler.handle_request(
+            r#"{"cmd":"QUERY","db":"t.db","query":"INSERT INTO x VALUES (2, NULL, NULL, NULL)"}"#,
+        );
+
+        // Columns preserve SELECT order even when not alphabetical.
+        let res = handler.handle_request(
+            r#"{"cmd":"QUERY","db":"t.db","query":"SELECT d, c, b, a FROM x ORDER BY a"}"#,
+        );
+        assert_eq!(res["columns"], json!(["d", "c", "b", "a"]));
+
+        let row0 = &res["data"][0];
+        assert_eq!(row0["a"], json!(1));
+        assert_eq!(row0["b"], json!("hi"));
+        assert_eq!(row0["c"], json!(2.5));
+        assert_eq!(row0["d"], json!("X'00ff'"));
+        assert_eq!(res["data"][1]["b"], Value::Null);
+
+        // Row object keys must serialize alphabetically (wire-compat with nlohmann::json).
+        let serialized = serde_json::to_string(row0).unwrap();
+        let pos_a = serialized.find("\"a\"").unwrap();
+        let pos_b = serialized.find("\"b\"").unwrap();
+        let pos_c = serialized.find("\"c\"").unwrap();
+        let pos_d = serialized.find("\"d\"").unwrap();
+        assert!(pos_a < pos_b && pos_b < pos_c && pos_c < pos_d);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn list_and_delete_db() {
+        let dir = temp_dir();
+        let mut handler = handler_in(&dir);
+
+        handler
+            .handle_request(r#"{"cmd":"QUERY","db":"a.db","query":"CREATE TABLE z(i INTEGER)"}"#);
+
+        let list = handler.handle_request(r#"{"cmd":"LIST"}"#);
+        let names: Vec<&str> = list["list"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
+        assert!(names.contains(&"a.db"));
+        assert!(!names.iter().any(|n| n.ends_with("-wal")));
+
+        assert_eq!(
+            handler.handle_request(r#"{"cmd":"DELETE_DB","db":"a.db"}"#),
+            json!({"result": "ok"})
+        );
+        // Already gone.
+        assert_eq!(
+            handler.handle_request(r#"{"cmd":"DELETE_DB","db":"a.db"}"#),
+            json!({"result": "error"})
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn command_is_case_insensitive() {
+        let dir = temp_dir();
+        let mut handler = handler_in(&dir);
+        assert!(handler
+            .handle_request(r#"{"cmd":"list"}"#)
+            .get("list")
+            .is_some());
+        assert!(handler
+            .handle_request(r#"{"cmd":"LiSt"}"#)
+            .get("list")
+            .is_some());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn generic_and_sql_error_codes() {
+        let dir = temp_dir();
+        let mut handler = handler_in(&dir);
+
+        // INVALID_FORMAT (0) with a message.
+        let r = handler.handle_request("garbage {{{");
+        assert_eq!(r["generic_error"], json!(0));
+        assert!(r.get("message").is_some());
+
+        // NO_COMMAND_SPECIFIED (1).
+        assert_eq!(
+            handler.handle_request(r#"{"db":"a.db"}"#)["generic_error"],
+            json!(1)
+        );
+        // UNKNOWN_COMMAND (2).
+        assert_eq!(
+            handler.handle_request(r#"{"cmd":"FROB"}"#)["generic_error"],
+            json!(2)
+        );
+        // NO_DATABASE_SPECIFIED (3) — missing db.
+        assert_eq!(
+            handler.handle_request(r#"{"cmd":"QUERY","query":"SELECT 1"}"#)["generic_error"],
+            json!(3)
+        );
+        // NO_DATABASE_SPECIFIED (3) — path traversal.
+        assert_eq!(
+            handler.handle_request(r#"{"cmd":"QUERY","db":"../x","query":"SELECT 1"}"#)
+                ["generic_error"],
+            json!(3)
+        );
+        // ERROR_READING_FROM_CLIENT (4) — missing query.
+        assert_eq!(
+            handler.handle_request(r#"{"cmd":"QUERY","db":"a.db"}"#)["generic_error"],
+            json!(4)
+        );
+
+        // Empty query -> SQLITE_MISUSE (21) "empty query".
+        let r = handler.handle_request(r#"{"cmd":"QUERY","db":"a.db","query":"   "}"#);
+        assert_eq!(r["error_code"], json!(21));
+        assert_eq!(r["error_message"], json!("empty query"));
+
+        // SQL error carries the primary code and message.
+        let r =
+            handler.handle_request(r#"{"cmd":"QUERY","db":"a.db","query":"SELECT * FROM ghosts"}"#);
+        assert_eq!(r["error_code"], json!(1));
+        assert!(r["error_message"]
+            .as_str()
+            .unwrap()
+            .contains("no such table"));
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn connection_cache_persists_across_requests() {
+        let dir = temp_dir();
+        let mut handler = handler_in(&dir);
+
+        // A temp table lives only for the lifetime of a single connection; seeing it on a
+        // later request proves the same cached connection is reused.
+        handler.handle_request(
+            r#"{"cmd":"QUERY","db":"c.db","query":"CREATE TEMP TABLE tmp(i INTEGER)"}"#,
+        );
+        handler
+            .handle_request(r#"{"cmd":"QUERY","db":"c.db","query":"INSERT INTO tmp VALUES (7)"}"#);
+        let res =
+            handler.handle_request(r#"{"cmd":"QUERY","db":"c.db","query":"SELECT i FROM tmp"}"#);
+        assert_eq!(res["data"][0]["i"], json!(7));
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+}
