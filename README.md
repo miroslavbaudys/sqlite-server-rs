@@ -11,6 +11,13 @@ reference Python client) work unchanged.
 - **Concurrency:** a Tokio multi-threaded runtime with a configurable worker count.
 - **Storage:** one SQLite database file per name, kept in a configured folder.
 
+> **Drop-in compatible with the C++ [sqlite-server](https://github.com/miroslavbaudys/sqlite-server).**
+> This port speaks the same wire protocol, reads the same [config file](#config-file)
+> format (identical JSON keys), and operates on the same on-disk SQLite database files.
+> You can switch a deployment from the C++ server to this one (or back) with no migration:
+> point either binary at the same `--databases-folder` (and the same `--config`) and it
+> just works. Existing databases and clients keep working unchanged.
+
 ---
 
 ## Building
