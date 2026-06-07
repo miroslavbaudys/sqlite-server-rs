@@ -1,6 +1,6 @@
 # sqlite-server-rs
 
-A Rust port of [sqlite-server](https://github.com/) — a small, multi-threaded TCP server
+A Rust port of [sqlite-server](https://github.com/miroslavbaudys/sqlite-server) — a small, multi-threaded TCP server
 that exposes [SQLite](https://sqlite.org) databases over a length-prefixed JSON protocol.
 Clients open a socket, send a JSON request, and receive a JSON response. The protocol is
 **wire-compatible** with the original C++ server, so existing clients (including the
