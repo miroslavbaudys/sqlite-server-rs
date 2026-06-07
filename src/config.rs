@@ -5,6 +5,7 @@ use clap::Parser;
 use serde_json::Value;
 
 /// Runtime configuration, resolved from either CLI flags or a JSON config file.
+#[derive(Debug)]
 pub struct Config {
     pub listen_addr: SocketAddr,
     pub workers: usize,
@@ -156,4 +157,115 @@ fn default_workers() -> usize {
     std::thread::available_parallelism()
         .map(|n| n.get())
         .unwrap_or(1)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    fn temp_dir() -> PathBuf {
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let id = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!("ssrs-config-{nanos}-{id}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn write_config(dir: &Path, body: &str) -> PathBuf {
+        let path = dir.join("config.json");
+        std::fs::write(&path, body).unwrap();
+        path
+    }
+
+    #[test]
+    fn resolve_endpoint_prefers_ipv4_numeric() {
+        let addr = resolve_endpoint("127.0.0.1", 3333);
+        assert!(addr.is_ipv4());
+        assert_eq!(addr.port(), 3333);
+    }
+
+    #[test]
+    fn resolve_endpoint_falls_back_when_unresolvable() {
+        // A host containing an interior NUL fails locally in CString::new before any DNS
+        // lookup, so this is deterministic and offline (a bogus hostname can't be used:
+        // some resolvers hijack unknown names instead of failing).
+        let addr = resolve_endpoint("bad\0host", 1234);
+        assert_eq!(addr, SocketAddr::from(([127, 0, 0, 1], 3333)));
+    }
+
+    #[test]
+    fn resolve_database_path_makes_absolute_when_existing() {
+        let dir = temp_dir();
+        let resolved = resolve_database_path(dir.to_str().unwrap()).unwrap();
+        assert!(resolved.is_absolute());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn resolve_database_path_errors_when_missing() {
+        let err = resolve_database_path("/no/such/folder/ssrs-xyz").unwrap_err();
+        assert!(err.contains("does not exist"), "got: {err}");
+    }
+
+    #[test]
+    fn from_file_parses_all_keys() {
+        let dir = temp_dir();
+        let body = format!(
+            r#"{{"client_max_packet_size":1024,"workers":3,"listen_ip":"127.0.0.1","listen_port":4567,"databases_folder":{}}}"#,
+            serde_json::to_string(dir.to_str().unwrap()).unwrap()
+        );
+        let path = write_config(&dir, &body);
+
+        let config = from_file(path.to_str().unwrap()).unwrap();
+        assert_eq!(config.client_max_packet_size, 1024);
+        assert_eq!(config.workers, 3);
+        assert_eq!(config.listen_addr.port(), 4567);
+        assert!(config.listen_addr.is_ipv4());
+        assert!(config.databases_folder.is_absolute());
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn from_file_missing_file() {
+        let err = from_file("/no/such/path/ssrs-config.json").unwrap_err();
+        assert!(err.contains("Config file does not exist"), "got: {err}");
+    }
+
+    #[test]
+    fn from_file_invalid_json() {
+        let dir = temp_dir();
+        let path = write_config(&dir, "{ this is not json");
+        let err = from_file(path.to_str().unwrap()).unwrap_err();
+        assert!(err.contains("Config parse error"), "got: {err}");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn from_file_missing_key() {
+        let dir = temp_dir();
+        let path = write_config(&dir, r#"{"workers":1}"#);
+        let err = from_file(path.to_str().unwrap()).unwrap_err();
+        assert!(err.contains("Missing key"), "got: {err}");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn from_file_wrong_value_type() {
+        let dir = temp_dir();
+        // workers as a string instead of a number.
+        let body = format!(
+            r#"{{"client_max_packet_size":1024,"workers":"three","listen_ip":"127.0.0.1","listen_port":4567,"databases_folder":{}}}"#,
+            serde_json::to_string(dir.to_str().unwrap()).unwrap()
+        );
+        let path = write_config(&dir, &body);
+        let err = from_file(path.to_str().unwrap()).unwrap_err();
+        assert!(err.contains("must be a non-negative number"), "got: {err}");
+        std::fs::remove_dir_all(&dir).ok();
+    }
 }
