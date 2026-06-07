@@ -20,7 +20,7 @@ tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "signa
 # keys serialize alphabetically, matching nlohmann::json in the C++ server.
 serde_json = "1"
 # Bundled SQLite (compiled from source — no system dependency), like sqlite3/ in C++.
-rusqlite = { version = "0.32", features = ["bundled"] }
+rusqlite = { version = "0.40", features = ["bundled"] }
 # CLI parsing — the analogue of boost::program_options.
 clap = { version = "4", features = ["derive"] }
 # JSON key-repair fallback for lightly-malformed requests ({cmd:"LIST"}).
