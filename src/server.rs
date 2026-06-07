@@ -10,10 +10,13 @@ use crate::connection;
 pub async fn run(config: Config) -> std::io::Result<()> {
     let config = Arc::new(config);
     let listener = TcpListener::bind(config.listen_addr).await?;
+    // Report the actually-bound address: with port 0 the OS assigns an ephemeral port,
+    // so config.listen_addr would not reflect the real one.
+    let local_addr = listener.local_addr()?;
 
     println!(
         "sqlite-server listening on {} (workers: {}, databases: {}, max packet: {} bytes)",
-        config.listen_addr,
+        local_addr,
         config.workers,
         config.databases_folder.display(),
         config.client_max_packet_size,

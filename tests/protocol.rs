@@ -1,15 +1,16 @@
 //! End-to-end protocol tests: boot the actual binary against a temp folder and speak the
 //! length-prefixed JSON protocol over a real TCP socket.
 
-use std::io::{Read, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpStream;
 use std::path::PathBuf;
-use std::process::{Child, Command};
+use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use serde_json::{json, Value};
 
-/// A running server bound to an ephemeral-ish port, cleaned up on drop.
+/// A running server bound to an OS-assigned ephemeral port, cleaned up on drop.
 struct TestServer {
     child: Child,
     port: u16,
@@ -18,35 +19,33 @@ struct TestServer {
 
 impl TestServer {
     fn start() -> TestServer {
-        // Unique temp folder + port per test run.
+        // A process-unique temp folder (counter avoids collisions between parallel tests).
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
         let nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let port = 20000 + (nanos % 20000) as u16;
-        let dir = std::env::temp_dir().join(format!("sqlite-server-rs-test-{nanos}"));
+        let id = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!("sqlite-server-rs-test-{nanos}-{id}"));
         std::fs::create_dir_all(&dir).unwrap();
 
         let bin = env!("CARGO_BIN_EXE_sqlite-server");
-        let child = Command::new(bin)
+        // Port 0 -> the OS picks a free port, eliminating port-collision races between
+        // parallel tests. We learn the real port from the server's startup log line.
+        let mut child = Command::new(bin)
             .args([
                 "--ip",
                 "127.0.0.1",
                 "--port",
-                &port.to_string(),
+                "0",
                 "--databases-folder",
                 dir.to_str().unwrap(),
             ])
+            .stdout(Stdio::piped())
             .spawn()
             .expect("spawn server");
 
-        // Wait for the listener to come up.
-        for _ in 0..100 {
-            if TcpStream::connect(("127.0.0.1", port)).is_ok() {
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(50));
-        }
+        let port = read_listen_port(&mut child);
 
         TestServer {
             child,
@@ -69,6 +68,37 @@ impl Drop for TestServer {
         let _ = self.child.kill();
         let _ = self.child.wait();
         let _ = std::fs::remove_dir_all(&self._dir);
+    }
+}
+
+/// Block until the server prints its startup line, then parse the bound port from it.
+/// The line looks like: `sqlite-server listening on 127.0.0.1:54321 (...)`.
+fn read_listen_port(child: &mut Child) -> u16 {
+    let stdout = child.stdout.take().expect("piped stdout");
+    let mut reader = BufReader::new(stdout);
+    let mut line = String::new();
+
+    loop {
+        line.clear();
+        let n = reader.read_line(&mut line).expect("read server stdout");
+        if n == 0 {
+            panic!("server exited before reporting a listen address");
+        }
+        if let Some(rest) = line.split("listening on ").nth(1) {
+            let addr = rest.split_whitespace().next().expect("address token");
+            let port = addr
+                .rsplit(':')
+                .next()
+                .and_then(|p| p.parse::<u16>().ok())
+                .unwrap_or_else(|| panic!("could not parse port from line: {line:?}"));
+
+            // Drain the rest of stdout in the background so a full pipe never blocks the server.
+            std::thread::spawn(move || {
+                let mut sink = Vec::new();
+                let _ = reader.read_to_end(&mut sink);
+            });
+            return port;
+        }
     }
 }
 
