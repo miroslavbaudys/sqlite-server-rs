@@ -1,0 +1,11 @@
+/target
+*.db
+*.db-wal
+*.db-shm
+*.db-journal
+
+# IDE / OS / Python tooling
+.idea
+.DS_Store
+__pycache__/
+*.py[cod]

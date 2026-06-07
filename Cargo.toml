@@ -1,0 +1,30 @@
+[package]
+name = "sqlite-server-rs"
+version = "0.1.0"
+edition = "2021"
+description = "A small, multi-threaded TCP server exposing SQLite databases over a length-prefixed JSON protocol (Rust port of sqlite-server)."
+license = "MIT"
+
+[[bin]]
+name = "sqlite-server"
+path = "src/main.rs"
+
+[dependencies]
+# Async runtime — the analogue of Boost.Asio's io_context + worker-thread pool.
+tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "signal", "macros"] }
+# JSON. NOTE: the `preserve_order` feature is intentionally NOT enabled so object
+# keys serialize alphabetically, matching nlohmann::json in the C++ server.
+serde_json = "1"
+# Bundled SQLite (compiled from source — no system dependency), like sqlite3/ in C++.
+rusqlite = { version = "0.32", features = ["bundled"] }
+# CLI parsing — the analogue of boost::program_options.
+clap = { version = "4", features = ["derive"] }
+# JSON key-repair fallback for lightly-malformed requests ({cmd:"LIST"}).
+regex = "1"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full"] }
+
+[profile.release]
+lto = true
+codegen-units = 1
