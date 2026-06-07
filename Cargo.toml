@@ -9,6 +9,10 @@ license = "MIT"
 name = "sqlite-server"
 path = "src/main.rs"
 
+[[example]]
+name = "client"
+path = "examples/rust/client.rs"
+
 [dependencies]
 # Async runtime — the analogue of Boost.Asio's io_context + worker-thread pool.
 tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "signal", "macros"] }

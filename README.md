@@ -170,6 +170,48 @@ An empty/whitespace query is reported as `error_code` 21 (`SQLITE_MISUSE`), `"em
 
 ---
 
+## Rust client
+
+A reference client lives at [`examples/rust/client.rs`](examples/rust/client.rs). It
+handles framing, client-side `?` / `?N` parameter binding with escaping, and typed
+`QueryResult` / `Row` wrappers (including `X'..'` BLOB decoding). It depends only on
+`serde_json` and `regex`. Run the demo against a live server:
+
+```sh
+# terminal 1
+mkdir -p /tmp/sqlite-data
+cargo run -- --databases-folder /tmp/sqlite-data
+
+# terminal 2
+cargo run --example client
+```
+
+Usage sketch:
+
+```rust
+let mut db = Sqlite::connect("mydb")?;                  // 127.0.0.1:3333 by default
+db.query("CREATE TABLE IF NOT EXISTS users(id INTEGER, name TEXT)", &[])?;
+db.query("INSERT INTO users VALUES (?, ?)", &[1.into(), "Alice".into()])?;  // ? is escaped
+
+let result = db.query("SELECT id, name FROM users WHERE id = ?", &[1.into()])?;
+for row in result.rows() {
+    println!("{:?} {:?}", row.get_i64("id"), row.get_str("name"));
+}
+
+let n = db.query("SELECT COUNT(*) AS n FROM users", &[])?.scalar_i64().unwrap_or(0);
+let dbs = db.list()?;                                   // LIST
+```
+
+Highlights:
+
+- **Parameter binding** — `?` and `?N` placeholders escaped client-side via the `Param`
+  enum (`i64`/`f64`/`&str`/`bool`/`Vec<u8>`/`Option<_>` all `.into()` it); `Vec<u8>`
+  becomes an `X'..'` BLOB literal.
+- **`QueryResult`** — `.rows()`, `.columns()` (true `SELECT` order), `.first()`,
+  `.scalar()` / `.scalar_i64()`, `.len()`, and `.server_error()`.
+- **`Row`** — typed accessors `get_i64` / `get_f64` / `get_str` / `get` / `is_null`, plus
+  `blob("col")` to decode a BLOB column back to `Vec<u8>`.
+
 ## Python client
 
 A ready-to-use, dependency-free client lives at
@@ -244,6 +286,7 @@ print(call("127.0.0.1", 3333,
 | `src/handler.rs` | Request parsing, command dispatch, response building, DB cache |
 | `tests/protocol.rs` | End-to-end protocol tests against the built binary |
 | `build.rs` | Embeds git branch/commit for `--version` |
+| `examples/rust/client.rs` | Reference Rust client + runnable demo (`cargo run --example client`) |
 | `examples/python/sqlite.py` | Reference Python client (standard library only) |
 
 ---
