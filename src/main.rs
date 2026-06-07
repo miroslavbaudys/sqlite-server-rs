@@ -1,3 +1,6 @@
+// This crate is entirely safe Rust; make any future `unsafe` a compile error.
+#![forbid(unsafe_code)]
+
 mod config;
 mod connection;
 mod handler;

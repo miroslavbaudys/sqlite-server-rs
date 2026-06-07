@@ -16,6 +16,8 @@
 //!
 //! It depends only on `serde_json` and `regex`, which the server crate already pulls in.
 
+#![forbid(unsafe_code)]
+
 use std::io::{self, Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
 
