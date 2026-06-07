@@ -4,6 +4,11 @@ use std::path::{Path, PathBuf};
 use clap::Parser;
 use serde_json::Value;
 
+/// Default per-connection `busy_timeout` (ms). How long SQLite waits for a lock held by
+/// another connection before returning SQLITE_BUSY — important when multiple clients
+/// (e.g. a web server and Celery workers) write to the same database.
+pub const DEFAULT_BUSY_TIMEOUT_MS: u64 = 5000;
+
 /// Runtime configuration, resolved from either CLI flags or a JSON config file.
 #[derive(Debug)]
 pub struct Config {
@@ -11,6 +16,7 @@ pub struct Config {
     pub workers: usize,
     pub databases_folder: PathBuf,
     pub client_max_packet_size: u32,
+    pub busy_timeout_ms: u64,
 }
 
 #[derive(Parser, Debug)]
@@ -49,6 +55,10 @@ struct Args {
     /// Max request size in bytes; larger requests close the connection
     #[arg(long = "client-max-packet-size", default_value_t = 16 * 1024 * 1024)]
     client_max_packet_size: u32,
+
+    /// Per-connection SQLite busy_timeout in milliseconds (lock-wait before SQLITE_BUSY)
+    #[arg(long = "busy-timeout", default_value_t = DEFAULT_BUSY_TIMEOUT_MS)]
+    busy_timeout_ms: u64,
 }
 
 /// Parse configuration. Returns `Ok(None)` when --version was handled (nothing to run).
@@ -73,6 +83,7 @@ pub fn parse() -> Result<Option<Config>, String> {
             workers: args.workers.unwrap_or_else(default_workers),
             databases_folder: resolve_database_path(&args.databases_folder)?,
             client_max_packet_size: args.client_max_packet_size,
+            busy_timeout_ms: args.busy_timeout_ms,
         },
     };
 
@@ -91,11 +102,21 @@ fn from_file(path: &str) -> Result<Config, String> {
     let listen_ip = require_str(&json, "listen_ip")?;
     let listen_port = require_u64(&json, "listen_port")? as u16;
 
+    // Optional so that config files written for the C++ server (which has no such key)
+    // still load; falls back to the default when absent.
+    let busy_timeout_ms = match json.get("busy_timeout_ms") {
+        Some(v) => v
+            .as_u64()
+            .ok_or_else(|| "Key busy_timeout_ms must be a non-negative number".to_string())?,
+        None => DEFAULT_BUSY_TIMEOUT_MS,
+    };
+
     Ok(Config {
         listen_addr: resolve_endpoint(&listen_ip, listen_port),
         workers: require_u64(&json, "workers")? as usize,
         databases_folder: resolve_database_path(&require_str(&json, "databases_folder")?)?,
         client_max_packet_size: require_u64(&json, "client_max_packet_size")? as u32,
+        busy_timeout_ms,
     })
 }
 
@@ -216,7 +237,7 @@ mod tests {
     fn from_file_parses_all_keys() {
         let dir = temp_dir();
         let body = format!(
-            r#"{{"client_max_packet_size":1024,"workers":3,"listen_ip":"127.0.0.1","listen_port":4567,"databases_folder":{}}}"#,
+            r#"{{"client_max_packet_size":1024,"workers":3,"listen_ip":"127.0.0.1","listen_port":4567,"busy_timeout_ms":1234,"databases_folder":{}}}"#,
             serde_json::to_string(dir.to_str().unwrap()).unwrap()
         );
         let path = write_config(&dir, &body);
@@ -227,6 +248,23 @@ mod tests {
         assert_eq!(config.listen_addr.port(), 4567);
         assert!(config.listen_addr.is_ipv4());
         assert!(config.databases_folder.is_absolute());
+        assert_eq!(config.busy_timeout_ms, 1234);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn from_file_busy_timeout_defaults_when_absent() {
+        // A config written for the C++ server (no busy_timeout_ms key) must still load.
+        let dir = temp_dir();
+        let body = format!(
+            r#"{{"client_max_packet_size":1024,"workers":1,"listen_ip":"127.0.0.1","listen_port":3333,"databases_folder":{}}}"#,
+            serde_json::to_string(dir.to_str().unwrap()).unwrap()
+        );
+        let path = write_config(&dir, &body);
+
+        let config = from_file(path.to_str().unwrap()).unwrap();
+        assert_eq!(config.busy_timeout_ms, DEFAULT_BUSY_TIMEOUT_MS);
 
         std::fs::remove_dir_all(&dir).ok();
     }

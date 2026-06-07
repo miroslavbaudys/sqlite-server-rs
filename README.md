@@ -61,6 +61,7 @@ cargo build --release      # -> target/release/sqlite-server
 | `-d, --databases-folder <dir>` | `sqlite` | Folder holding the database files (must exist) |
 | `-w, --workers <n>` | CPU cores | Number of worker threads |
 | `--client-max-packet-size <bytes>` | `16777216` (16 MiB) | Max request size; larger requests close the connection |
+| `--busy-timeout <ms>` | `5000` | Per-connection SQLite `busy_timeout` (lock-wait before `SQLITE_BUSY`) |
 
 ### Config file
 
@@ -72,12 +73,37 @@ When `--config` is given, all settings come from the JSON file and the other fla
   "workers": 4,
   "listen_ip": "127.0.0.1",
   "listen_port": 3333,
-  "databases_folder": "./data"
+  "databases_folder": "./data",
+  "busy_timeout_ms": 5000
 }
 ```
 
+`busy_timeout_ms` is optional (defaults to `5000`), so a config file written for the C++
+server still loads unchanged.
+
 The databases folder **must already exist** — the server will not create it (individual
 database files inside it are created on demand). Shutdown is graceful on `SIGINT`/`SIGTERM`.
+
+### Concurrent access from multiple clients
+
+A common use is sharing one database between several processes — for example a web server
+and background workers (Celery, RQ, …), possibly on different machines. Routing them all
+through this one server (which owns the files) avoids the unsafe practice of opening the
+same SQLite file directly from many processes or over a network filesystem.
+
+To make that work smoothly, **every connection the server opens is automatically tuned**:
+
+- `PRAGMA journal_mode=WAL` — readers and a writer can work concurrently (this setting
+  persists in the database file).
+- `PRAGMA busy_timeout=<--busy-timeout>` — a connection waits up to that many milliseconds
+  for a lock instead of immediately failing with `SQLITE_BUSY` ("database is locked").
+- `PRAGMA synchronous=NORMAL` — the safe, faster companion to WAL.
+
+This handles the typical "many readers, occasional writers" web workload well. Keep in mind
+SQLite is still **single-writer**: concurrent writes are serialized, so for sustained
+high-volume concurrent writes a client/server database (PostgreSQL, …) is the better fit.
+For transactional multi-statement work, issue `BEGIN` / `COMMIT` as separate requests on the
+same connection (each `QUERY` runs one statement).
 
 ### Running as a service (systemd)
 

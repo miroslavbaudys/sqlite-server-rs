@@ -162,6 +162,16 @@ impl RequestHandler {
         if !self.databases.contains_key(db) {
             let path = self.config.databases_folder.join(db);
             let conn = Connection::open(path)?;
+            // Tune every connection for concurrent multi-client access (e.g. a web server
+            // plus Celery workers hitting the same database):
+            //   - WAL lets readers and a writer work concurrently (persists in the file).
+            //   - busy_timeout makes a connection wait for a lock instead of immediately
+            //     returning SQLITE_BUSY ("database is locked").
+            //   - synchronous=NORMAL is the safe, faster companion to WAL.
+            conn.execute_batch(&format!(
+                "PRAGMA journal_mode=WAL; PRAGMA busy_timeout={}; PRAGMA synchronous=NORMAL;",
+                self.config.busy_timeout_ms
+            ))?;
             self.databases.insert(db.to_string(), conn);
         }
         Ok(self.databases.get(db).expect("just inserted"))
@@ -296,6 +306,7 @@ mod tests {
             workers: 1,
             databases_folder: dir.to_path_buf(),
             client_max_packet_size: 16 * 1024 * 1024,
+            busy_timeout_ms: 5000,
         };
         RequestHandler::new(Arc::new(config))
     }
@@ -502,6 +513,26 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("no such table"));
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn connections_use_wal_and_busy_timeout() {
+        let dir = temp_dir();
+        let mut handler = handler_in(&dir);
+
+        // Opening the db applies the pragmas; verify they took effect.
+        handler
+            .handle_request(r#"{"cmd":"QUERY","db":"p.db","query":"CREATE TABLE t(i INTEGER)"}"#);
+
+        let mode =
+            handler.handle_request(r#"{"cmd":"QUERY","db":"p.db","query":"PRAGMA journal_mode"}"#);
+        assert_eq!(mode["data"][0]["journal_mode"], json!("wal"));
+
+        let timeout =
+            handler.handle_request(r#"{"cmd":"QUERY","db":"p.db","query":"PRAGMA busy_timeout"}"#);
+        assert_eq!(timeout["data"][0]["timeout"], json!(5000));
 
         std::fs::remove_dir_all(&dir).ok();
     }
