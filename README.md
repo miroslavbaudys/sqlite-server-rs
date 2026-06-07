@@ -381,10 +381,26 @@ print(call("127.0.0.1", 3333,
 ## GUI client (letos / SQLiteStudio)
 
 [letos](https://github.com/pawelsalawa/letos) — the free, multi-platform SQLite database
-manager by Pawel Salawa (formerly **SQLiteStudio**) — can connect to this server as a
-graphical client through its plugin, including on Android. The server is built with this in
-mind: its request parser deliberately tolerates SQLiteStudio's lightly-malformed
-`{cmd:"LIST"}` JSON (see [`parse_request`](src/handler.rs)), so the protocols line up.
+manager by Pawel Salawa (formerly **SQLiteStudio**) — can browse and query databases served
+by this server, including from Android. It speaks this server's protocol natively (the
+request parser even tolerates SQLiteStudio's `{cmd:"LIST"}` quirk — see
+[`parse_request`](src/handler.rs)).
+
+To connect:
+
+1. **Add a database** and set **Database type** to **Android SQLite**.
+2. Open the **Android database URL** editor and choose **Connection method → Network (IP address)**.
+3. Enter the server's **IP address** and **Port** — the port you started the server with
+   (e.g. `3333`). The plugin defaults to `12121`, so change it to match.
+4. Leave **Remote access password** unchecked — this server has no authentication (keep it on
+   a trusted network).
+5. Under **Database**, add the database name (a file in the server's databases folder, as
+   returned by `LIST`).
+6. Give it a **Name**, optionally tick **Permanent**, click **Test connection**, then **OK**.
+
+| 1. Pick the database type | 2. Configure the network connection |
+|---|---|
+| ![letos: Android SQLite database type](docs/letos-database-type.png) | ![letos: network connection](docs/letos-network-connection.png) |
 
 ---
 
