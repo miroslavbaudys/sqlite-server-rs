@@ -378,6 +378,14 @@ print(call("127.0.0.1", 3333,
            {"cmd": "QUERY", "db": "mydb", "query": "SELECT 1 AS one"}))
 ```
 
+## GUI client (letos / SQLiteStudio)
+
+[letos](https://github.com/pawelsalawa/letos) — the free, multi-platform SQLite database
+manager by Pawel Salawa (formerly **SQLiteStudio**) — can connect to this server as a
+graphical client through its plugin, including on Android. The server is built with this in
+mind: its request parser deliberately tolerates SQLiteStudio's lightly-malformed
+`{cmd:"LIST"}` JSON (see [`parse_request`](src/handler.rs)), so the protocols line up.
+
 ---
 
 ## Project layout
