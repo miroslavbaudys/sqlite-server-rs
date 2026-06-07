@@ -1,5 +1,9 @@
 # sqlite-server-rs
 
+[![CI](https://github.com/miroslavbaudys/sqlite-server-rs/actions/workflows/ci.yml/badge.svg)](https://github.com/miroslavbaudys/sqlite-server-rs/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+![Rust](https://img.shields.io/badge/rust-stable-orange.svg)
+
 A Rust port of [sqlite-server](https://github.com/miroslavbaudys/sqlite-server) — a small, multi-threaded TCP server
 that exposes [SQLite](https://sqlite.org) databases over a length-prefixed JSON protocol.
 Clients open a socket, send a JSON request, and receive a JSON response. The protocol is
