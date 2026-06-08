@@ -61,7 +61,7 @@ cargo build --release      # -> target/release/sqlite-server
 | `-a, --auth <password>` | `""` (disabled) | Require clients to authenticate with this password (see [Authentication](#authentication)) |
 | `--ip-whitelist <list>` | `""` (allow all) | Comma-separated IPs/CIDRs allowed to connect (see [IP whitelist](#ip-whitelist)) |
 | `-d, --databases-folder <dir>` | `sqlite` | Folder holding the database files (must exist) |
-| `-w, --workers <n>` | CPU cores | Number of worker threads |
+| `-w, --workers <n>` | CPU cores | Number of worker threads; also caps how many queries execute concurrently (extra requests queue for a slot) |
 | `--client-max-packet-size <bytes>` | `16777216` (16 MiB) | Max request size; larger requests close the connection |
 | `--busy-timeout <ms>` | `5000` | Per-connection SQLite `busy_timeout` (lock-wait before `SQLITE_BUSY`) |
 
@@ -157,6 +157,13 @@ SQLite is still **single-writer**: concurrent writes are serialized, so for sust
 high-volume concurrent writes a client/server database (PostgreSQL, …) is the better fit.
 For transactional multi-statement work, issue `BEGIN` / `COMMIT` as separate requests on the
 same connection (each `QUERY` runs one statement).
+
+Concurrent query execution is bounded by `--workers`: at most that many requests run at
+once and the rest wait their turn, so a burst of clients (e.g. hundreds of connections all
+writing) is serviced by a fixed pool of threads rather than spawning one per in-flight
+query. Size `--workers` for your peak concurrency. Note that **open connections are cheap**
+— idle ones cost a parked task, not a thread — so this caps *concurrent work*, not how many
+clients can connect (size the process's open-file limit for that; see the systemd example).
 
 ### Running as a service (systemd)
 
