@@ -6,7 +6,7 @@ description = "A small, multi-threaded TCP server exposing SQLite databases over
 license = "MIT"
 
 [[bin]]
-name = "sqlite-server"
+name = "sqlite3-server"
 path = "src/main.rs"
 
 [[example]]

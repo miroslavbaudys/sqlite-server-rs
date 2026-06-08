@@ -30,7 +30,7 @@ The build needs only the Rust toolchain (`cargo`/`rustc`). SQLite is compiled fr
 via `rusqlite`'s `bundled` feature, so there is no system SQLite dependency.
 
 ```sh
-cargo build --release      # -> target/release/sqlite-server
+cargo build --release      # -> target/release/sqlite3-server
 ```
 
 | Dependency | Purpose |
@@ -46,7 +46,7 @@ cargo build --release      # -> target/release/sqlite-server
 ## Running
 
 ```sh
-./target/release/sqlite-server --port 3333 --databases-folder ./data
+./target/release/sqlite3-server --port 3333 --databases-folder ./data
 ```
 
 ### Command-line options
@@ -174,7 +174,7 @@ The server runs in the foreground, logs to stdout, and shuts down cleanly on `SI
 
 ```sh
 cargo build --release
-sudo install -m 0755 target/release/sqlite-server /usr/local/bin/sqlite-server
+sudo install -m 0755 target/release/sqlite3-server /usr/local/bin/sqlite3-server
 sudo useradd --system --no-create-home --shell /usr/sbin/nologin sqlite-server
 sudo mkdir -p /var/lib/sqlite-server
 sudo chown sqlite-server:sqlite-server /var/lib/sqlite-server
@@ -189,7 +189,7 @@ After=network.target
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/sqlite-server --ip 127.0.0.1 --port 3333 --databases-folder /var/lib/sqlite-server
+ExecStart=/usr/local/bin/sqlite3-server --ip 127.0.0.1 --port 3333 --databases-folder /var/lib/sqlite-server
 User=sqlite-server
 Group=sqlite-server
 Restart=on-failure

@@ -34,7 +34,7 @@ impl TestServer {
         let dir = std::env::temp_dir().join(format!("sqlite-server-rs-test-{nanos}-{id}"));
         std::fs::create_dir_all(&dir).unwrap();
 
-        let bin = env!("CARGO_BIN_EXE_sqlite-server");
+        let bin = env!("CARGO_BIN_EXE_sqlite3-server");
         // Port 0 -> the OS picks a free port, eliminating port-collision races between
         // parallel tests. We learn the real port from the server's startup log line.
         let mut child = Command::new(bin)
