@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
+use tokio::sync::Semaphore;
 
 use crate::config::Config;
 use crate::handler::RequestHandler;
@@ -12,7 +13,11 @@ use crate::handler::RequestHandler;
 ///
 /// Framing (both directions): a 4-byte little-endian u32 length followed by that many
 /// bytes of UTF-8 JSON.
-pub async fn handle(mut stream: TcpStream, config: Arc<Config>) -> std::io::Result<()> {
+pub async fn handle(
+    mut stream: TcpStream,
+    config: Arc<Config>,
+    query_limiter: Arc<Semaphore>,
+) -> std::io::Result<()> {
     // Each connection owns its own database-connection cache.
     let mut handler = RequestHandler::new(Arc::clone(&config));
 
@@ -35,9 +40,19 @@ pub async fn handle(mut stream: TcpStream, config: Arc<Config>) -> std::io::Resu
         }
         let request = String::from_utf8_lossy(&buf).into_owned();
 
-        // SQLite work is blocking. `block_in_place` lets us run it on the current
-        // worker thread without starving the runtime's other tasks.
-        let response = tokio::task::block_in_place(|| handler.handle_request(&request));
+        // SQLite work is blocking. `block_in_place` lets us run it on the current worker
+        // thread without starving the runtime's other tasks, but each concurrent call
+        // borrows an extra pool thread. The semaphore caps how many run at once to
+        // `workers`, mirroring the C++ server's fixed thread pool: excess requests wait
+        // here for a permit instead of spawning more threads. SQLite serializes writes
+        // anyway, so this costs no throughput while bounding thread/resource use.
+        let response = {
+            let _permit = query_limiter
+                .acquire()
+                .await
+                .expect("query limiter semaphore is never closed");
+            tokio::task::block_in_place(|| handler.handle_request(&request))
+        };
 
         let body = serde_json::to_string(&response).unwrap_or_else(|_| "{}".to_string());
         let mut out = Vec::with_capacity(4 + body.len());

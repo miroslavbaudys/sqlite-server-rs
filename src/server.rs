@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use tokio::net::TcpListener;
+use tokio::sync::Semaphore;
 
 use crate::config::Config;
 use crate::connection;
@@ -9,6 +10,9 @@ use crate::connection;
 /// each accepted socket is handled by its own task, and SIGINT/SIGTERM stop the loop.
 pub async fn run(config: Config) -> std::io::Result<()> {
     let config = Arc::new(config);
+    // Cap concurrent (blocking) SQLite execution to `workers`, so the process does not
+    // spawn an unbounded number of pool threads under load. Shared across all connections.
+    let query_limiter = Arc::new(Semaphore::new(config.workers.max(1)));
     let listener = TcpListener::bind(config.listen_addr).await?;
     // Report the actually-bound address: with port 0 the OS assigns an ephemeral port,
     // so config.listen_addr would not reflect the real one.
@@ -39,9 +43,10 @@ pub async fn run(config: Config) -> std::io::Result<()> {
                             continue;
                         }
                         let config = Arc::clone(&config);
+                        let query_limiter = Arc::clone(&query_limiter);
                         tokio::spawn(async move {
                             // Connection errors are normal (clients disconnect); drop quietly.
-                            let _ = connection::handle(stream, config).await;
+                            let _ = connection::handle(stream, config, query_limiter).await;
                         });
                     }
                     Err(err) => eprintln!("Accept error: {err}"),
