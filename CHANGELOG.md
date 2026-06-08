@@ -5,6 +5,17 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.1] - 2026-06-08
+
+### Changed
+- Bound concurrent (blocking) SQLite execution to the configured `--workers` count with a
+  shared semaphore, instead of letting Tokio spawn up to `max_blocking_threads` (512) pool
+  threads under load. Excess requests now wait for a permit rather than each holding an OS
+  thread that busy-waits on SQLite's single write lock — mirroring the C++ server's fixed
+  thread pool. Since SQLite serializes writes, this bounds thread/memory use under bursts
+  of concurrent queries with no loss of throughput; reads still parallelize up to
+  `--workers` under WAL.
+
 ## [0.1.0] - 2026-06-08
 
 Initial release: a Rust port of the C++
@@ -28,4 +39,5 @@ config-compatible with it (same protocol, same JSON config keys, same on-disk fi
 - Unit tests and end-to-end protocol tests; GitHub Actions CI.
 - `#![forbid(unsafe_code)]` across the crate and example.
 
+[0.1.1]: https://github.com/miroslavbaudys/sqlite-server-rs/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/miroslavbaudys/sqlite-server-rs/releases/tag/v0.1.0

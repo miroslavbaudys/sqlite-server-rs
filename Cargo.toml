@@ -1,6 +1,6 @@
 [package]
 name = "sqlite-server-rs"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 description = "A small, multi-threaded TCP server exposing SQLite databases over a length-prefixed JSON protocol (Rust port of sqlite-server)."
 license = "MIT"
