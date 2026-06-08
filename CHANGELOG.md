@@ -5,6 +5,14 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0] - 2026-06-08
+
+### Changed
+- **Renamed the binary from `sqlite-server` to `sqlite3-server`** to match the C++ server,
+  so the two are interchangeable at the command/path level. Update any scripts, `PATH`
+  references, or systemd `ExecStart=` lines accordingly. The crate name
+  (`sqlite-server-rs`), the systemd service/user, and the CLI help text are unchanged.
+
 ## [0.1.1] - 2026-06-08
 
 ### Changed
@@ -39,5 +47,6 @@ config-compatible with it (same protocol, same JSON config keys, same on-disk fi
 - Unit tests and end-to-end protocol tests; GitHub Actions CI.
 - `#![forbid(unsafe_code)]` across the crate and example.
 
+[0.2.0]: https://github.com/miroslavbaudys/sqlite-server-rs/compare/v0.1.1...v0.2.0
 [0.1.1]: https://github.com/miroslavbaudys/sqlite-server-rs/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/miroslavbaudys/sqlite-server-rs/releases/tag/v0.1.0
