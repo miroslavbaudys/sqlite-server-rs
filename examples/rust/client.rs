@@ -260,18 +260,48 @@ pub struct Sqlite {
 }
 
 impl Sqlite {
-    /// Connect to the default endpoint (127.0.0.1:3333).
+    /// Connect to the default endpoint (127.0.0.1:3333) with no authentication.
     pub fn connect(database: &str) -> io::Result<Self> {
         Self::connect_to(database, (DEFAULT_HOST, DEFAULT_PORT))
     }
 
-    /// Connect to a specific endpoint.
+    /// Connect to a specific endpoint with no authentication.
     pub fn connect_to<A: ToSocketAddrs>(database: &str, addr: A) -> io::Result<Self> {
+        Self::connect_with_auth(database, addr, "")
+    }
+
+    /// Connect to a specific endpoint, authenticating first if `auth` is non-empty.
+    ///
+    /// When the server is started with `--auth`, the `{"auth": "..."}` handshake must be
+    /// the first message on the connection. Returns `PermissionDenied` if the server
+    /// rejects the password.
+    pub fn connect_with_auth<A: ToSocketAddrs>(
+        database: &str,
+        addr: A,
+        auth: &str,
+    ) -> io::Result<Self> {
         let stream = TcpStream::connect(addr)?;
-        Ok(Self {
+        let mut client = Self {
             stream,
             database: database.to_string(),
-        })
+        };
+        if !auth.is_empty() {
+            client.authenticate(auth)?;
+        }
+        Ok(client)
+    }
+
+    /// Perform the `{"auth": "..."}` handshake; errors if the server does not reply "ok".
+    fn authenticate(&mut self, auth: &str) -> io::Result<()> {
+        let response = self.call(&json!({ "auth": auth }))?;
+        if response.get("result").and_then(Value::as_str) == Some("ok") {
+            Ok(())
+        } else {
+            Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "sqlite-server authentication failed",
+            ))
+        }
     }
 
     /// Run a SQL statement against this connection's database, binding `params` into

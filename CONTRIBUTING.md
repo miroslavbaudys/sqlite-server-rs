@@ -78,6 +78,9 @@ Before opening a PR, please confirm:
 - **Untrusted input:** treat the `db` name and `query` as hostile. Preserve the
   existing path-traversal and validation guarantees, and add tests when you touch
   them.
+- **Access control:** if you touch authentication (`--auth`) or the IP whitelist
+  (`--ip-whitelist`), preserve their guarantees — an unauthenticated or non-whitelisted
+  client must never reach command handling — and add/adjust tests in `tests/`.
 - **Keep diffs focused** — one logical change per pull request. Unrelated
   formatting churn makes review harder.
 - Do not commit build artifacts; `target/` is ignored.

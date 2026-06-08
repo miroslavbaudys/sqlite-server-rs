@@ -15,11 +15,13 @@ pub async fn run(config: Config) -> std::io::Result<()> {
     let local_addr = listener.local_addr()?;
 
     println!(
-        "sqlite-server listening on {} (workers: {}, databases: {}, max packet: {} bytes)",
+        "sqlite-server listening on {} (workers: {}, databases: {}, max packet: {} bytes, auth: {}, ip whitelist: {})",
         local_addr,
         config.workers,
         config.databases_folder.display(),
         config.client_max_packet_size,
+        if config.auth.is_empty() { "disabled" } else { "enabled" },
+        config.ip_whitelist_repr(),
     );
 
     let shutdown = shutdown_signal();
@@ -29,7 +31,13 @@ pub async fn run(config: Config) -> std::io::Result<()> {
         tokio::select! {
             accepted = listener.accept() => {
                 match accepted {
-                    Ok((stream, _peer)) => {
+                    Ok((stream, peer)) => {
+                        // Reject peers outside the configured whitelist before building any
+                        // per-connection state. Dropping `stream` here closes the socket.
+                        if !config.is_ip_allowed(peer.ip()) {
+                            eprintln!("Connection rejected, not in ip whitelist: {}", peer.ip());
+                            continue;
+                        }
                         let config = Arc::clone(&config);
                         tokio::spawn(async move {
                             // Connection errors are normal (clients disconnect); drop quietly.

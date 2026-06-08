@@ -1,4 +1,5 @@
-use std::net::{SocketAddr, ToSocketAddrs};
+use std::fmt;
+use std::net::{IpAddr, SocketAddr, ToSocketAddrs};
 use std::path::{Path, PathBuf};
 
 use clap::Parser;
@@ -17,6 +18,156 @@ pub struct Config {
     pub databases_folder: PathBuf,
     pub client_max_packet_size: u32,
     pub busy_timeout_ms: u64,
+    /// Optional password; when non-empty, every connection must authenticate before
+    /// any command is processed. Empty disables authentication.
+    pub auth: String,
+    /// Optional list of allowed client networks. When empty, every peer is allowed.
+    pub ip_whitelist: Vec<Cidr>,
+}
+
+impl Config {
+    /// Returns true if `ip` is permitted to connect. An empty whitelist means the
+    /// feature is disabled and every client is allowed.
+    pub fn is_ip_allowed(&self, ip: IpAddr) -> bool {
+        self.ip_whitelist.is_empty() || self.ip_whitelist.iter().any(|net| net.contains(ip))
+    }
+
+    /// Human-readable representation of the configured whitelist (for logging).
+    pub fn ip_whitelist_repr(&self) -> String {
+        if self.ip_whitelist.is_empty() {
+            return "(any)".to_string();
+        }
+        self.ip_whitelist
+            .iter()
+            .map(Cidr::to_string)
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+}
+
+/// A parsed CIDR network (IPv4 or IPv6) for the IP whitelist. The stored address is
+/// canonical (host bits zeroed), so it doubles as a clean display value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Cidr {
+    network: IpAddr,
+    prefix: u8,
+}
+
+impl Cidr {
+    /// Parse a CIDR (`10.0.0.0/8`, `2001:db8::/32`) or a bare address (`127.0.0.1`,
+    /// treated as `/32`; `::1` as `/128`).
+    pub fn parse(entry: &str) -> Result<Self, String> {
+        let invalid = || format!("Invalid ip_whitelist entry: {entry}");
+        let (addr_str, prefix) = match entry.split_once('/') {
+            Some((addr, prefix_str)) => {
+                let prefix: u8 = prefix_str.parse().map_err(|_| invalid())?;
+                (addr, Some(prefix))
+            }
+            None => (entry, None),
+        };
+
+        let addr: IpAddr = addr_str.parse().map_err(|_| invalid())?;
+        let max_prefix = if addr.is_ipv4() { 32 } else { 128 };
+        let prefix = prefix.unwrap_or(max_prefix);
+        if prefix > max_prefix {
+            return Err(invalid());
+        }
+
+        Ok(Self {
+            network: canonicalize(addr, prefix),
+            prefix,
+        })
+    }
+
+    /// True if `ip` falls inside this network (same family and matching prefix bits).
+    pub fn contains(&self, ip: IpAddr) -> bool {
+        match (self.network, ip) {
+            (IpAddr::V4(net), IpAddr::V4(ip)) => {
+                masked_eq(&net.octets(), &ip.octets(), self.prefix)
+            }
+            (IpAddr::V6(net), IpAddr::V6(ip)) => {
+                masked_eq(&net.octets(), &ip.octets(), self.prefix)
+            }
+            // Different address families never match.
+            _ => false,
+        }
+    }
+}
+
+impl fmt::Display for Cidr {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}/{}", self.network, self.prefix)
+    }
+}
+
+/// Compare the first `prefix` bits of two equal-length octet slices.
+fn masked_eq(a: &[u8], b: &[u8], prefix: u8) -> bool {
+    let full_bytes = (prefix / 8) as usize;
+    if a[..full_bytes] != b[..full_bytes] {
+        return false;
+    }
+    let remaining_bits = prefix % 8;
+    if remaining_bits > 0 {
+        let mask = 0xffu8 << (8 - remaining_bits);
+        if (a[full_bytes] & mask) != (b[full_bytes] & mask) {
+            return false;
+        }
+    }
+    true
+}
+
+/// Zero the host bits of `addr` beyond `prefix`, yielding the canonical network address.
+fn canonicalize(addr: IpAddr, prefix: u8) -> IpAddr {
+    fn mask(octets: &mut [u8], prefix: u8) {
+        let prefix = prefix as usize;
+        for (i, byte) in octets.iter_mut().enumerate() {
+            let bits = i * 8;
+            if bits >= prefix {
+                *byte = 0;
+            } else if bits + 8 > prefix {
+                *byte &= 0xffu8 << (bits + 8 - prefix);
+            }
+        }
+    }
+    match addr {
+        IpAddr::V4(a) => {
+            let mut o = a.octets();
+            mask(&mut o, prefix);
+            IpAddr::V4(o.into())
+        }
+        IpAddr::V6(a) => {
+            let mut o = a.octets();
+            mask(&mut o, prefix);
+            IpAddr::V6(o.into())
+        }
+    }
+}
+
+/// Parse a comma-separated list of CIDR/address entries (CLI form), trimming whitespace
+/// and skipping empties.
+fn parse_whitelist_csv(s: &str) -> Result<Vec<Cidr>, String> {
+    s.split(',')
+        .map(str::trim)
+        .filter(|e| !e.is_empty())
+        .map(Cidr::parse)
+        .collect()
+}
+
+/// Parse the optional `ip_whitelist` JSON array (config-file form). Absent => empty list.
+fn parse_whitelist_json(json: &Value) -> Result<Vec<Cidr>, String> {
+    match json.get("ip_whitelist") {
+        None => Ok(Vec::new()),
+        Some(Value::Array(items)) => items
+            .iter()
+            .map(|item| {
+                let s = item.as_str().ok_or_else(|| {
+                    "Config key ip_whitelist must contain only strings".to_string()
+                })?;
+                Cidr::parse(s)
+            })
+            .collect(),
+        Some(_) => Err("Config key ip_whitelist must be an array of CIDR strings".to_string()),
+    }
 }
 
 #[derive(Parser, Debug)]
@@ -43,6 +194,15 @@ struct Args {
     /// Listen port
     #[arg(short = 'p', long = "port", default_value_t = 3333)]
     port: u16,
+
+    /// Require clients to authenticate with this password (empty disables auth)
+    #[arg(short = 'a', long = "auth", default_value = "")]
+    auth: String,
+
+    /// Comma-separated IPs/CIDRs allowed to connect, e.g. 127.0.0.1,10.0.0.0/8
+    /// (empty allows all)
+    #[arg(long = "ip-whitelist", default_value = "")]
+    ip_whitelist: String,
 
     /// Folder holding the database files (must exist)
     #[arg(short = 'd', long = "databases-folder", default_value = "sqlite")]
@@ -84,6 +244,8 @@ pub fn parse() -> Result<Option<Config>, String> {
             databases_folder: resolve_database_path(&args.databases_folder)?,
             client_max_packet_size: args.client_max_packet_size,
             busy_timeout_ms: args.busy_timeout_ms,
+            auth: args.auth,
+            ip_whitelist: parse_whitelist_csv(&args.ip_whitelist)?,
         },
     };
 
@@ -111,12 +273,24 @@ fn from_file(path: &str) -> Result<Config, String> {
         None => DEFAULT_BUSY_TIMEOUT_MS,
     };
 
+    // Optional: absent => feature disabled. Keeps configs written for either server loading.
+    let auth = match json.get("auth") {
+        Some(v) => v
+            .as_str()
+            .ok_or_else(|| "Key auth must be a string".to_string())?
+            .to_string(),
+        None => String::new(),
+    };
+    let ip_whitelist = parse_whitelist_json(&json)?;
+
     Ok(Config {
         listen_addr: resolve_endpoint(&listen_ip, listen_port),
         workers: require_u64(&json, "workers")? as usize,
         databases_folder: resolve_database_path(&require_str(&json, "databases_folder")?)?,
         client_max_packet_size: require_u64(&json, "client_max_packet_size")? as u32,
         busy_timeout_ms,
+        auth,
+        ip_whitelist,
     })
 }
 
@@ -249,6 +423,91 @@ mod tests {
         assert!(config.listen_addr.is_ipv4());
         assert!(config.databases_folder.is_absolute());
         assert_eq!(config.busy_timeout_ms, 1234);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn cidr_parse_and_contains_ipv4() {
+        let net = Cidr::parse("10.0.0.0/8").unwrap();
+        assert!(net.contains("10.1.2.3".parse().unwrap()));
+        assert!(!net.contains("11.0.0.1".parse().unwrap()));
+        // Display is canonical (host bits zeroed).
+        assert_eq!(Cidr::parse("10.1.2.3/8").unwrap().to_string(), "10.0.0.0/8");
+    }
+
+    #[test]
+    fn cidr_bare_address_is_single_host() {
+        let net = Cidr::parse("127.0.0.1").unwrap();
+        assert_eq!(net.to_string(), "127.0.0.1/32");
+        assert!(net.contains("127.0.0.1".parse().unwrap()));
+        assert!(!net.contains("127.0.0.2".parse().unwrap()));
+    }
+
+    #[test]
+    fn cidr_ipv6_and_cross_family() {
+        let net = Cidr::parse("2001:db8::/32").unwrap();
+        assert!(net.contains("2001:db8::1".parse().unwrap()));
+        assert!(!net.contains("2001:dead::1".parse().unwrap()));
+        // An IPv4 address never matches an IPv6 network (and vice versa).
+        assert!(!net.contains("10.0.0.1".parse().unwrap()));
+    }
+
+    #[test]
+    fn cidr_rejects_invalid() {
+        assert!(Cidr::parse("not.an.ip/8").is_err());
+        assert!(Cidr::parse("10.0.0.0/33").is_err());
+        assert!(Cidr::parse("::1/129").is_err());
+    }
+
+    #[test]
+    fn is_ip_allowed_empty_allows_all() {
+        let dir = temp_dir();
+        let body = format!(
+            r#"{{"client_max_packet_size":1,"workers":1,"listen_ip":"127.0.0.1","listen_port":3333,"databases_folder":{}}}"#,
+            serde_json::to_string(dir.to_str().unwrap()).unwrap()
+        );
+        let config = from_file(write_config(&dir, &body).to_str().unwrap()).unwrap();
+        assert!(config.auth.is_empty());
+        assert!(config.ip_whitelist.is_empty());
+        assert!(config.is_ip_allowed("8.8.8.8".parse().unwrap()));
+        assert_eq!(config.ip_whitelist_repr(), "(any)");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn from_file_parses_auth_and_whitelist() {
+        let dir = temp_dir();
+        let body = format!(
+            r#"{{"client_max_packet_size":1,"workers":1,"listen_ip":"127.0.0.1","listen_port":3333,"auth":"s3cret","ip_whitelist":["127.0.0.1","10.0.0.0/8"],"databases_folder":{}}}"#,
+            serde_json::to_string(dir.to_str().unwrap()).unwrap()
+        );
+        let config = from_file(write_config(&dir, &body).to_str().unwrap()).unwrap();
+        assert_eq!(config.auth, "s3cret");
+        assert!(config.is_ip_allowed("127.0.0.1".parse().unwrap()));
+        assert!(config.is_ip_allowed("10.9.9.9".parse().unwrap()));
+        assert!(!config.is_ip_allowed("192.168.0.1".parse().unwrap()));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn from_file_rejects_bad_whitelist() {
+        let dir = temp_dir();
+        // Not an array.
+        let body = format!(
+            r#"{{"client_max_packet_size":1,"workers":1,"listen_ip":"127.0.0.1","listen_port":3333,"ip_whitelist":"127.0.0.1","databases_folder":{}}}"#,
+            serde_json::to_string(dir.to_str().unwrap()).unwrap()
+        );
+        let err = from_file(write_config(&dir, &body).to_str().unwrap()).unwrap_err();
+        assert!(err.contains("must be an array"), "got: {err}");
+
+        // Invalid CIDR entry.
+        let body = format!(
+            r#"{{"client_max_packet_size":1,"workers":1,"listen_ip":"127.0.0.1","listen_port":3333,"ip_whitelist":["nope/8"],"databases_folder":{}}}"#,
+            serde_json::to_string(dir.to_str().unwrap()).unwrap()
+        );
+        let err = from_file(write_config(&dir, &body).to_str().unwrap()).unwrap_err();
+        assert!(err.contains("Invalid ip_whitelist entry"), "got: {err}");
 
         std::fs::remove_dir_all(&dir).ok();
     }

@@ -19,6 +19,11 @@ struct TestServer {
 
 impl TestServer {
     fn start() -> TestServer {
+        Self::start_with_args(&[])
+    }
+
+    /// Start a server with additional CLI flags (e.g. `--auth`, `--ip-whitelist`).
+    fn start_with_args(extra: &[&str]) -> TestServer {
         // A process-unique temp folder (counter avoids collisions between parallel tests).
         static COUNTER: AtomicU64 = AtomicU64::new(0);
         let nanos = std::time::SystemTime::now()
@@ -41,6 +46,7 @@ impl TestServer {
                 "--databases-folder",
                 dir.to_str().unwrap(),
             ])
+            .args(extra)
             .stdout(Stdio::piped())
             .spawn()
             .expect("spawn server");
@@ -292,6 +298,65 @@ fn transaction_rollback_on_one_connection() {
         &json!({"cmd":"QUERY","db":"tx.db","query":"SELECT COUNT(*) AS n FROM t"}),
     );
     assert_eq!(resp["data"][0]["n"], json!(0));
+}
+
+#[test]
+fn auth_required_handshake() {
+    let server = TestServer::start_with_args(&["--auth", "s3cret"]);
+    let mut conn = server.connect();
+
+    // A command before authenticating is rejected.
+    assert_eq!(
+        call(&mut conn, &json!({"cmd": "LIST"})),
+        json!({"result": "error"})
+    );
+    // Wrong password is rejected.
+    assert_eq!(
+        call(&mut conn, &json!({"auth": "nope"})),
+        json!({"result": "error"})
+    );
+    // Correct password authenticates this connection.
+    assert_eq!(
+        call(&mut conn, &json!({"auth": "s3cret"})),
+        json!({"result": "ok"})
+    );
+    // Now commands work.
+    assert!(call(&mut conn, &json!({"cmd": "LIST"}))
+        .get("list")
+        .is_some());
+
+    // Authentication is per-connection: a fresh socket must authenticate again.
+    let mut conn2 = server.connect();
+    assert_eq!(
+        call(&mut conn2, &json!({"cmd": "LIST"})),
+        json!({"result": "error"})
+    );
+}
+
+#[test]
+fn ip_whitelist_allows_listed_peer() {
+    let server = TestServer::start_with_args(&["--ip-whitelist", "127.0.0.1/32"]);
+    let mut conn = server.connect();
+    assert!(call(&mut conn, &json!({"cmd": "LIST"}))
+        .get("list")
+        .is_some());
+}
+
+#[test]
+fn ip_whitelist_rejects_other_peers() {
+    // Whitelist a network that excludes localhost; the connection must be dropped at accept.
+    let server = TestServer::start_with_args(&["--ip-whitelist", "10.0.0.0/8"]);
+    let mut conn = server.connect();
+
+    let body = serde_json::to_vec(&json!({"cmd": "LIST"})).unwrap();
+    let mut out = Vec::new();
+    out.extend_from_slice(&(body.len() as u32).to_le_bytes());
+    out.extend_from_slice(&body);
+    // The write may buffer locally, but no response will ever come back.
+    let _ = conn.write_all(&out);
+
+    let mut header = [0u8; 4];
+    assert!(conn.read_exact(&mut header).is_err());
 }
 
 #[test]

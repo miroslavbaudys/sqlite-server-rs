@@ -34,5 +34,6 @@ payload(s) you sent, and what you observed. Prefer adding a test in tests/.
 - [ ] Existing commands (`QUERY`, `LIST`, `DELETE_DB`) still behave as documented.
 - [ ] Wire compatibility is preserved (framing, error codes, value encoding, key ordering).
 - [ ] Untrusted input handling is preserved (no regression in `db`-name / path-traversal validation).
+- [ ] Access control is preserved (if I touched `--auth` / `--ip-whitelist`, unauthenticated or non-whitelisted clients still never reach command handling).
 - [ ] Commit messages use the imperative mood and a concise subject.
 - [ ] Documentation (README / comments) is updated where relevant.

@@ -24,6 +24,8 @@ const SQLITE_MISUSE: i64 = 21;
 pub struct RequestHandler {
     config: Arc<Config>,
     databases: HashMap<String, Connection>,
+    /// Whether this connection has authenticated (only relevant when `config.auth` is set).
+    authenticated: bool,
 }
 
 impl RequestHandler {
@@ -31,6 +33,7 @@ impl RequestHandler {
         Self {
             config,
             databases: HashMap::new(),
+            authenticated: false,
         }
     }
 
@@ -45,6 +48,21 @@ impl RequestHandler {
                 });
             }
         };
+
+        // When a password is configured, a connection must authenticate before any command
+        // is processed. A `{"auth": "..."}` message authenticates the connection; anything
+        // else from an unauthenticated client is rejected. Mirrors the C++ RequestHandler.
+        if !self.config.auth.is_empty() {
+            if let Some(auth) = json.get("auth").and_then(Value::as_str) {
+                if auth == self.config.auth {
+                    self.authenticated = true;
+                    return json!({ "result": "ok" });
+                }
+            }
+            if !self.authenticated {
+                return json!({ "result": "error" });
+            }
+        }
 
         // Missing or non-string `cmd` -> no command. Top-level errors echo the raw request.
         let cmd = match json.get("cmd").and_then(Value::as_str) {
@@ -307,6 +325,8 @@ mod tests {
             databases_folder: dir.to_path_buf(),
             client_max_packet_size: 16 * 1024 * 1024,
             busy_timeout_ms: 5000,
+            auth: String::new(),
+            ip_whitelist: Vec::new(),
         };
         RequestHandler::new(Arc::new(config))
     }
@@ -533,6 +553,48 @@ mod tests {
         let timeout =
             handler.handle_request(r#"{"cmd":"QUERY","db":"p.db","query":"PRAGMA busy_timeout"}"#);
         assert_eq!(timeout["data"][0]["timeout"], json!(5000));
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn auth_gate_requires_handshake() {
+        let dir = temp_dir();
+        let config = Config {
+            listen_addr: "127.0.0.1:0".parse::<SocketAddr>().unwrap(),
+            workers: 1,
+            databases_folder: dir.to_path_buf(),
+            client_max_packet_size: 16 * 1024 * 1024,
+            busy_timeout_ms: 5000,
+            auth: "s3cret".to_string(),
+            ip_whitelist: Vec::new(),
+        };
+        let mut handler = RequestHandler::new(Arc::new(config));
+
+        // A command before authenticating is rejected.
+        assert_eq!(
+            handler.handle_request(r#"{"cmd":"LIST"}"#),
+            json!({"result": "error"})
+        );
+        // Wrong password is rejected and does not authenticate.
+        assert_eq!(
+            handler.handle_request(r#"{"auth":"nope"}"#),
+            json!({"result": "error"})
+        );
+        assert_eq!(
+            handler.handle_request(r#"{"cmd":"LIST"}"#),
+            json!({"result": "error"})
+        );
+        // Correct password authenticates the connection.
+        assert_eq!(
+            handler.handle_request(r#"{"auth":"s3cret"}"#),
+            json!({"result": "ok"})
+        );
+        // Now commands work.
+        assert!(handler
+            .handle_request(r#"{"cmd":"LIST"}"#)
+            .get("list")
+            .is_some());
 
         std::fs::remove_dir_all(&dir).ok();
     }
