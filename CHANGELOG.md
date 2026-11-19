@@ -5,6 +5,13 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.1] - 2026-11-19
+
+### Changed
+- Updated dependencies: rusqlite 0.40.2, clap 4.6.6, serde_json 1.0.151, tokio 1.53.1,
+  regex 1.13.1.
+- CI: bumped `actions/checkout` to v7 and `actions/cache` to v6.
+
 ## [0.2.0] - 2026-06-08
 
 ### Changed
@@ -47,6 +54,7 @@ config-compatible with it (same protocol, same JSON config keys, same on-disk fi
 - Unit tests and end-to-end protocol tests; GitHub Actions CI.
 - `#![forbid(unsafe_code)]` across the crate and example.
 
+[0.2.1]: https://github.com/miroslavbaudys/sqlite-server-rs/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/miroslavbaudys/sqlite-server-rs/compare/v0.1.1...v0.2.0
 [0.1.1]: https://github.com/miroslavbaudys/sqlite-server-rs/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/miroslavbaudys/sqlite-server-rs/releases/tag/v0.1.0
